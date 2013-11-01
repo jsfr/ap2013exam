@@ -16,6 +16,9 @@ import Gpx
 
 type Position = (Integer, Integer)
 interpolate :: Integer -> Position -> Position -> [Position]
+interpolate n p1 p2 = [(fst p2 - k*dx, snd p2 - k*dy) | k <- reverse [0..n-1]]
+    where dx = (fst p2 - fst p1) `div` n
+          dy = (snd p2 - snd p1) `div` n
 
 --
 -- Define the types Context and SalsaCommand
