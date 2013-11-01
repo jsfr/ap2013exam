@@ -3,7 +3,7 @@
 -- To be used at the exam for Advanced Programming, B1-2013
 --
 
-module SalsaParser where
+module SalsaParser(parseString, parseFile, Error) where
 
 import SalsaAst
 import SimpleParse
@@ -90,10 +90,11 @@ command = par
     where par = at `chainl1` parop
           parop = symbol "||" >> return Par
           at = bop At (move <|> braces command) (symbol "@") (spaces >> vident)
-          move = do sids <- spaces >> (sident `sepBy1` spaces1)
+          move = do sids0 <- token sident
+                    sids1 <- many (token1 sident)
                     symbol "->"
                     p <- pos
-                    return $ Move sids p
+                    return $ Move (sids0:sids1) p
           bop f l op r = do x <- l
                             bop' x
               where bop' x = do op
@@ -104,24 +105,24 @@ command = par
 definition :: Parser Definition
 definition = viewdef <|> rectangle <|> circle <|> view <|> group
     where exprn n = replicateM n (spaces1 >> expr)
-          viewdef = do symbol "viewdef"
+          viewdef = do string "viewdef"
                        vid <- token1 vident
                        [e1, e2] <- exprn 2
                        return $ Viewdef vid e1 e2
-          rectangle = do symbol "rectangle"
+          rectangle = do string "rectangle"
                          sid <- token1 sident
                          [e1, e2, e3, e4] <- exprn 4
                          col <- colour
                          return $ Rectangle sid e1 e2 e3 e4 col
-          circle =  do symbol "circle"
+          circle =  do string "circle"
                        sid <- spaces1 >> sident
                        [e1, e2, e3] <- exprn 3
                        col <- colour
                        return $ Circle sid e1 e2 e3 col
-          view = do symbol "view"
+          view = do string "view"
                     vid <- token1 vident
                     return $ View vid
-          group = do symbol "group"
+          group = do string "group"
                      vid <- token1 vident
                      symbol "["
                      vids <- token (vident `sepBy1` spaces1)
@@ -136,13 +137,14 @@ defcom = comParse <|> defParse
                         return $ Def def
 
 program :: Parser Program
-program = defcom `sepBy1` spaces1
+program = spaces >> defcom `sepBy1` spaces1
 
 parseString :: String -> Either Error Program
 parseString s =
   case parse (do {e <- program; token eof; return e}) s of
       [(e, [])] -> Right e
-      _         -> Left "Parser Error"
+      (_, _):_ -> Left "Parser Error: Ambigious grammar"
+      []        -> Left "Parser Error: Couldn't parse"
 
 parseFile :: FilePath -> IO (Either Error Program)
 parseFile filename = fmap parseString $ readFile filename
