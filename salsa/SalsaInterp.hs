@@ -10,6 +10,7 @@ import SalsaAst
 import Gpx
 import qualified Data.Map as M
 import qualified Data.Maybe as Ma
+import qualified Data.List as Li
 
 
 --------------------------------
@@ -18,7 +19,7 @@ import qualified Data.Maybe as Ma
 
 -- |Environment is a triple with a map of viewdef and shape definitions,
 -- a list of active views and the framerate as an integer
-type Environment = (M.Map Ident Definition, [Ident], Integer)
+type Environment = (M.Map Ident Definition, M.Map Ident Definition, [Ident], Integer)
 
 -- |State is a map of maps where the first key is the view,
 -- and the second is a shape giving the position of the shape on the view
@@ -67,7 +68,11 @@ interpolate n p1 p2 = [(fst p2 - k*dx, snd p2 - k*dy) | k <- reverse [0..n-1]]
 
 runProg :: Integer -> Program -> Animation
 runProg 0 _ = error "Framerate cannot be zero"
---runProg n prog = undefined
+runProg n prog = let contexts = buildContexts prog (emptyCon n) []
+                     views = buildViews (head contexts)
+                     start = animate 1 (last contexts) (last contexts)
+                     frames = buildFrames n (reverse contexts) []
+                 in (views,  start ++ frames)
 
 buildContexts :: [DefCom] -> Context -> [Context] -> [Context]
 buildContexts [] con cons = con:cons
@@ -78,27 +83,54 @@ buildContexts (com@(Com _):defcoms) con cons =
     let (_, newCon) = runS (defCom com) con
     in buildContexts defcoms newCon (con:cons)
 
---animate n (env1, st1) (env2, st2) = undefined
+buildViews :: Context -> [(ViewName, Integer, Integer)]
+buildViews con = M.elems (M.map (\(Viewdef ident (Const x) (Const y)) ->
+                          (ident, x, y)) (M.filter (\def ->
+                                                    case def of
+                                                        Viewdef {} -> True
+                                                        _ -> False)
+                          (getViDefs con)))
 
+buildFrames :: Integer -> [Context] -> [Frame] -> [Frame]
+buildFrames _ [] frames = frames
+buildFrames _ [_] frames = frames
+buildFrames n (con1:con2:cons) frames = buildFrames n (con2:cons) (frames ++ animate n con1 con2)
+
+
+animate :: Integer -> Context -> Context -> [Frame]
+animate n con1 con2 =
+    let shapes = M.intersectionWith (M.intersectionWith (interpolate n)) (getSt con1) (getSt con2)
+        instrs = M.mapWithKey (\vident view -> M.mapWithKey (\sident plist -> map (\pos -> draw pos (M.lookup sident $ getShDefs con1) vident ) plist ) view) shapes
+        frames = map Li.concat $ Li.transpose $ M.elems $ M.map (Li.transpose . M.elems) instrs
+    in frames
+
+draw :: (Integer, Integer) -> Maybe Definition -> ViewName -> GpxInstr
+draw (x,y) (Just (Rectangle _ _ _ (Const w) (Const h) col)) view = DrawRect x y w h view (show col)
+draw (x,y) (Just (Circle _ _ _ (Const r) col)) view = DrawCirc x y r view (show col)
+draw _ Nothing _ = error "Shape from state was not in environment"
+draw _ (Just _) _ = error "Not a shape or shape was malformed, e.g. with not constant parameters"
 
 ----------------------------------------
 -- Functions for manipulating the context
 --
 
-getDefs :: Context -> M.Map Ident Definition
-getDefs (Context (defs, _, _) _) = defs
+getViDefs :: Context -> M.Map Ident Definition
+getViDefs (Context (viewdefs, _, _, _) _) = viewdefs
+
+getShDefs :: Context -> M.Map Ident Definition
+getShDefs (Context (_, shapedefs, _, _) _) = shapedefs
 
 getViews :: Context -> [Ident]
-getViews (Context (_, views, _) _) = views
+getViews (Context (_, _, views, _) _) = views
 
 getFr :: Context -> Integer
-getFr (Context (_, _, fr) _) = fr
+getFr (Context (_, _, _, fr) _) = fr
 
 emptySt :: State
 emptySt = M.empty
 
 emptyEnv :: Integer -> Environment
-emptyEnv n = (M.empty, [], n)
+emptyEnv n = (M.empty, M.empty, [], n)
 
 emptyCon :: Integer -> Context
 emptyCon n = Context (emptyEnv n) emptySt
@@ -107,11 +139,21 @@ updateSt :: Context -> State -> Context
 updateSt con = Context (getEnv con)
 
 updateView :: Context -> [Ident] -> Context
-updateView con views = Context (getDefs con, views, getFr con) (getSt con)
+updateView con views = Context (getViDefs con,
+                                getShDefs con,
+                                views, getFr con) (getSt con)
 
-updateDefs :: Context -> Ident -> Definition -> Context
-updateDefs con ident def = Context (M.insert ident def (getDefs con),
-                                    getViews con, getFr con) (getSt con)
+updateViDefs :: Context -> Ident -> Definition -> Context
+updateViDefs con ident def = Context (M.insert ident def (getViDefs con),
+                                      getShDefs con,
+                                      getViews con,
+                                      getFr con) (getSt con)
+
+updateShDefs :: Context -> Ident -> Definition -> Context
+updateShDefs con ident def = Context (getViDefs con,
+                                      M.insert ident def (getShDefs con),
+                                      getViews con,
+                                      getFr con) (getSt con)
 
 lookupDef :: Ident -> M.Map Ident Definition -> Maybe Definition 
 lookupDef = M.lookup
@@ -141,7 +183,7 @@ askCon = SalsaCommand $ \con -> (con, getSt con)
 
 askView :: Ident -> SalsaCommand [Ident]
 askView ident = SalsaCommand $ \con ->
-    let idents = case lookupDef ident (getDefs con) of
+    let idents = case lookupDef ident (getViDefs con) of
                      Nothing -> error "View not defined"
                      Just (Group _ ids) -> ids
                      Just (Viewdef {}) -> [ident]
@@ -201,18 +243,18 @@ putView idents = Salsa $ \con -> ((), updateView con idents)
 insertDef :: Definition -> Salsa ()
 insertDef def@(Viewdef ident _ _) = Salsa $
     \con -> let st = M.insert ident M.empty (getSt con)
-                newCon1 = updateDefs con ident def
+                newCon1 = updateViDefs con ident def
                 newCon2 = updateSt newCon1 st
             in ((), newCon2)
 insertDef def@(Group ident _) = Salsa $
-    \con -> ((), updateDefs con ident def)
+    \con -> ((), updateViDefs con ident def)
 insertDef def@(Rectangle ident (Const x) (Const y) _ _ _) = Salsa $
     \con -> let st = insertShape ident (x,y) (getViews con) (getSt con)
-                newCon = updateSt (updateDefs con ident def) st
+                newCon = updateSt (updateShDefs con ident def) st
             in ((), newCon)
 insertDef def@(Circle ident (Const x) (Const y) _ _) = Salsa $
     \con -> let st = insertShape ident (x,y) (getViews con) (getSt con)
-                newCon = updateSt (updateDefs con ident def) st
+                newCon = updateSt (updateShDefs con ident def) st
             in ((), newCon)
 insertDef _ = error "Def cannot be inserted or elements are not constants"
 
