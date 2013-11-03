@@ -1,56 +1,100 @@
+-- |Module for interpreting the abstract syntax from the Salsa Language parser.
+-- The interpretations is done from SalsaAst to Gpx
+module SalsaInterp where --(Position, interpolate, runProg) where
 
+----------
+-- Imports
 --
--- Skeleton for Salsa interpreter
--- To be used at the exam for Advanced Programming, B1-2013
---
-
-module SalsaInterp
-       -- (Position, interpolate, runProg)
-where
 
 import SalsaAst
 import Gpx
 import qualified Data.Map as M
 import qualified Data.Maybe as Ma
 
+
+--------------------------------
+-- Context datatype and subtypes
 --
--- The function interpolate
+
+data Environment = Environment { getDefs :: M.Map Ident Definition,
+                                 getViews :: [Ident],
+                                 getFramerate :: Integer } deriving Show
+type State = M.Map Ident (M.Map Ident Position)
+data Context = Context { getEnv :: Environment, getState :: State } deriving Show
+
+
+-------------------------
+-- The SalsaCommand monad
+--
+
+newtype SalsaCommand a = SalsaCommand {runSC :: Context -> (a, State) }
+
+instance Monad SalsaCommand where
+    return x = SalsaCommand $ \con -> (x, getState con)
+    m >>= f  = SalsaCommand $ \con ->
+                   let (x, newState) = runSC m con
+                   in runSC (f x) (Context (getEnv con) newState)
+
+
+------------------
+-- The Salsa monad
+--
+
+newtype Salsa a = Salsa {runS :: Context -> (a, Context) }
+
+instance Monad Salsa where
+    return x = Salsa $ \con -> (x, con)
+    m >>= f  = Salsa $ \con ->
+                   let (x, newCon) = runS m con
+                   in runS (f x) newCon
+
+
+---------------
+-- External API
 --
 
 type Position = (Integer, Integer)
+
 interpolate :: Integer -> Position -> Position -> [Position]
 interpolate n p1 p2 = [(fst p2 - k*dx, snd p2 - k*dy) | k <- reverse [0..n-1]]
     where dx = (fst p2 - fst p1) `div` n
           dy = (snd p2 - snd p1) `div` n
 
---
--- Define the types Context and SalsaCommand
---
-
-type Environment = (M.Map Ident Definition, [Ident], Integer)
-type State = M.Map Ident (M.Map Ident Position) -- fst Ident = View, snd Ident = Shape
-data Context = Context Environment State
-
-newtype SalsaCommand a = SalsaCommand {runSC :: Context -> (a, State) }
-
-instance Monad SalsaCommand where
-    return x = SalsaCommand $ \(Context _ state) -> (x, state)
-    m >>= f  = SalsaCommand $ \con @ (Context env _) ->
-                   let (x, newState) = runSC m con
-                   in runSC (f x) (Context env newState)
-
--- functions for manipulating the context
+runProg :: Integer -> Program -> Animation
+runProg 0 _ = error "Framerate cannot be zero"
+runProg n prog = undefined
 
 
---
--- Define the function command
+buildContexts :: [DefCom] -> Context -> [Context] -> [Context]
+buildContexts [] con cons = con:cons
+buildContexts (def@(Def _):defcoms) con cons = let (_, newCon) = runS (defCom def) con in buildContexts defcoms newCon cons
+buildContexts (com@(Com _):defcoms) con cons = let (_, newCon) = runS (defCom com) con in buildContexts defcoms newCon (con:cons)
+
+animate n (env1, st1) (env2, st2) = undefined
+
+
+-----------------------------
+-- Functions for SalsaCommand
 --
 
 ask :: SalsaCommand Context
-ask = SalsaCommand $ \(Context env st) -> (Context env st, st)
+ask = SalsaCommand $ \con -> (con, getState con)
+
+local :: (Context -> Context) -> SalsaCommand a -> SalsaCommand a
+local f m = SalsaCommand $ \con -> let con' = f con
+                                   in runSC m con'
 
 putState :: State -> SalsaCommand ()
-putState newState = SalsaCommand $ \(Context _ _) -> ((), newState)
+putState newState = SalsaCommand $ const ((), newState)
+
+activeViews :: Ident -> SalsaCommand [Ident]
+activeViews ident = SalsaCommand $ \con ->
+    let idents = case M.lookup ident ((getDefs . getEnv) con) of
+                     Nothing -> error "View not defined"
+                     Just (Group _ ids) -> ids
+                     Just (Viewdef {}) -> [ident]
+                     _ -> error "Id is not a view"
+    in (idents, getState con)
 
 move :: State -> [Ident] -> [Ident] -> Pos -> State
 move st [] [] _ = st
@@ -64,6 +108,7 @@ move st (v:vs) ids p = case M.lookup v st of
                                   (Nothing, _) -> move' view is
                                   (Just _, Abs (Const x) (Const y)) -> move' (M.insert i (x, y) view) is
                                   (Just (x, y), Rel (Const dx) (Const dy)) -> move' (M.insert i (x + dx, y + dy) view) is
+                                  _ -> error "Postion was not constants"
 
 expr :: Expr -> SalsaCommand Integer
 expr (Plus e1 e2) = do x <- expr e1
@@ -83,47 +128,49 @@ expr (Yproj ident) = do (Context _ st) <- ask
 command :: Command -> SalsaCommand ()
 command (Move idents (Abs e1 e2)) = do x <- expr e1
                                        y <- expr e2
-                                       (Context (_, views, _) st) <- ask
-                                       putState (move st views idents (Abs (Const x) (Const y)))
+                                       con <- ask
+                                       putState (move (getState con) ((getViews.getEnv) con) idents (Abs (Const x) (Const y)))
 command (Move idents (Rel e1 e2)) = do dx <- expr e1
                                        dy <- expr e2
-                                       (Context (_, views, _) st) <- ask
-                                       putState (move st views idents (Rel (Const dx) (Const dy)))
+                                       con <- ask
+                                       putState (move (getState con) ((getViews.getEnv) con) idents (Rel (Const dx) (Const dy)))
 command (Par c1 c2) = do command c1
                          command c2
---command (At c ident) = undefined check if ID is group and then do local on env
+command (At c ident) = do views <- activeViews ident
+                          local (\con ->
+                            let defs = (getDefs . getEnv) con
+                                n = (getFramerate . getEnv) con
+                                st = getState con
+                            in Context (Environment defs views n) st) (command c)
 
 
+----------------------
+-- Functions for Salsa
 --
--- Define the type Salsa
---
-
-data Salsa a = Salsa {runS :: Context -> (a, Context) }
-
-instance Monad Salsa where
-    return x = Salsa $ \con -> (x, con)
-    m >>= f  = Salsa $ \con ->
-                   let (x, newCon) = runS m con
-                   in runS (f x) newCon
-
---
--- Define the functions liftC, definition, and defCom
---
-
--- functions for manipulating the context
 
 setView :: [Ident] -> Salsa ()
-setView idents = Salsa $ \(Context (defs, _, n) st) -> ((), Context (defs, idents, n) st)
+setView idents = Salsa $ \con -> ((), Context (Environment ((getDefs.getEnv) con) idents ((getFramerate.getEnv) con)) (getState con))
 
 insertDef :: Definition -> Salsa ()
-insertDef def@(Viewdef ident _ _) = Salsa $ \(Context (defs, views, n) st) -> ((), Context (M.insert ident def defs, views, n) (M.insert ident M.empty st))
-insertDef group@(Group ident idents) = Salsa $ \(Context (defs, views, n) st) -> ((), Context (M.insert ident group defs, views, n) st)
-insertDef rect@(Rectangle ident (Const x) (Const y) w h col) = Salsa $ \(Context (defs, views, n) st) -> ((), Context (M.insert ident rect defs, views, n) (insertShape ident (x,y) views st))
-insertDef circ@(Circle ident (Const x) (Const y) r col) = Salsa $ \(Context (defs, views, n) st) -> ((), Context (M.insert ident circ defs, views, n) (insertShape ident (x,y) views st))
+insertDef def@(Viewdef ident _ _) =
+    Salsa $ \(Context (defs, views, n) st) ->
+    ((), Context (M.insert ident def defs, views, n) (M.insert ident M.empty st))
+insertDef group@(Group ident _) =
+    Salsa $ \(Context (defs, views, n) st) ->
+    ((), Context (M.insert ident group defs, views, n) st)
+insertDef rect@(Rectangle ident (Const x) (Const y) _ _ _) =
+    Salsa $ \(Context (defs, views, n) st) ->
+    ((), Context (M.insert ident rect defs, views, n) (insertShape ident (x,y) views st))
+insertDef circ@(Circle ident (Const x) (Const y) _ _) =
+    Salsa $ \(Context (defs, views, n) st) ->
+    ((), Context (M.insert ident circ defs, views, n) (insertShape ident (x,y) views st))
+insertDef _ = error "Def cannot be inserted or elements are not constants"
 
 insertShape :: Ident -> Position -> [Ident] -> State -> State
 insertShape _ _ [] st = st
-insertShape ident pos (v:vs) st = insertShape ident pos vs (M.insert v (M.insert ident pos (M.lookup v st)) st)
+insertShape ident pos (v:vs) st = case M.lookup v st of
+    Nothing -> error "Couldn't find active view in state"
+    Just view -> insertShape ident pos vs (M.insert v (M.insert ident pos view) st)
 
 liftC :: SalsaCommand a -> Salsa a
 liftC m = Salsa $ \con @ (Context env _) ->
@@ -135,17 +182,19 @@ definition (Viewdef ident e1 e2) = do x <- liftC $ expr e1
                                       y <- liftC $ expr e2
                                       insertDef (Viewdef ident (Const x) (Const y))
                                       setView [ident]
-definition (Rectangle ident e1 e2 e3 e4 col) = undefined
-definition (Circle ident e1 e2 e3 col) = undefined
-definition (View ident) = undefined
-definition (Group ident idents) = undefined
+definition (Rectangle ident e1 e2 e3 e4 col) = do x <- liftC $ expr e1
+                                                  y <- liftC $ expr e2
+                                                  w <- liftC $ expr e3
+                                                  h <- liftC $ expr e4
+                                                  insertDef (Rectangle ident (Const x) (Const y) (Const w) (Const h) col)
+definition (Circle ident e1 e2 e3 col) = do x <- liftC $ expr e1
+                                            y <- liftC $ expr e2
+                                            r <- liftC $ expr e3
+                                            insertDef (Circle ident (Const x) (Const y) (Const r) col)
+definition (View ident) = do idents <- liftC $ activeViews ident
+                             setView idents
+definition group@(Group {}) = insertDef group
 
 defCom :: DefCom -> Salsa ()
-defCom = undefined
-
---
--- Define the function runProg
---
-
-runProg :: Integer -> Program -> Animation
-runProg n prog = undefined
+defCom (Def def) = definition def
+defCom (Com com) = liftC $ command com
