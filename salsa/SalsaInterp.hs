@@ -1,6 +1,6 @@
 -- |Module for interpreting the abstract syntax from the Salsa Language parser.
 -- The interpretations is done from SalsaAst to Gpx
-module SalsaInterp where --(Position, interpolate, runProg) where
+module SalsaInterp(Position, interpolate, runProg) where
 
 ----------
 -- Imports
@@ -18,14 +18,14 @@ import qualified Data.List as Li
 --
 
 -- |Environment is a triple with a map of viewdef and shape definitions,
--- a list of active views and the framerate as an integer
+-- a list of active views and the framerate as an integer.
 type Environment = (M.Map Ident Definition, M.Map Ident Definition, [Ident], Integer)
 
 -- |State is a map of maps where the first key is the view,
--- and the second is a shape giving the position of the shape on the view
+-- and the second is a shape giving the position of the shape on the view.
 type State = M.Map Ident (M.Map Ident Position)
 
--- |Context is a record with an Environment and State
+-- |Context is a record with an Environment and State.
 data Context = Context { getEnv :: Environment, getSt :: State } deriving Show
 
 
@@ -74,90 +74,64 @@ runProg n prog = let contexts = buildContexts prog (emptyCon n) []
                      frames = buildFrames n (reverse contexts) []
                  in (views,  start ++ frames)
 
-buildContexts :: [DefCom] -> Context -> [Context] -> [Context]
-buildContexts [] con cons = con:cons
-buildContexts (def@(Def _):defcoms) con cons =
-    let (_, newCon) = runS (defCom def) con
-    in buildContexts defcoms newCon cons
-buildContexts (com@(Com _):defcoms) con cons =
-    let (_, newCon) = runS (defCom com) con
-    in buildContexts defcoms newCon (con:cons)
-
-buildViews :: Context -> [(ViewName, Integer, Integer)]
-buildViews con = M.elems (M.map (\(Viewdef ident (Const x) (Const y)) ->
-                          (ident, x, y)) (M.filter (\def ->
-                                                    case def of
-                                                        Viewdef {} -> True
-                                                        _ -> False)
-                          (getViDefs con)))
-
-buildFrames :: Integer -> [Context] -> [Frame] -> [Frame]
-buildFrames _ [] frames = frames
-buildFrames _ [_] frames = frames
-buildFrames n (con1:con2:cons) frames = buildFrames n (con2:cons) (frames ++ animate n con1 con2)
-
-
-animate :: Integer -> Context -> Context -> [Frame]
-animate n con1 con2 =
-    let shapes = M.intersectionWith (M.intersectionWith (interpolate n)) (getSt con1) (getSt con2)
-        instrs = M.mapWithKey (\vident view -> M.mapWithKey (\sident plist -> map (\pos -> draw pos (M.lookup sident $ getShDefs con1) vident ) plist ) view) shapes
-        frames = map Li.concat $ Li.transpose $ M.elems $ M.map (Li.transpose . M.elems) instrs
-    in frames
-
-draw :: (Integer, Integer) -> Maybe Definition -> ViewName -> GpxInstr
-draw (x,y) (Just (Rectangle _ _ _ (Const w) (Const h) col)) view = DrawRect x y w h view (show col)
-draw (x,y) (Just (Circle _ _ _ (Const r) col)) view = DrawCirc x y r view (show col)
-draw _ Nothing _ = error "Shape from state was not in environment"
-draw _ (Just _) _ = error "Not a shape or shape was malformed, e.g. with not constant parameters"
 
 ----------------------------------------
 -- Functions for manipulating the context
 --
 
+-- |Returns the viewdef and group definitions.
 getViDefs :: Context -> M.Map Ident Definition
 getViDefs (Context (viewdefs, _, _, _) _) = viewdefs
 
+-- |Returns the circle and rectangle definitions.
 getShDefs :: Context -> M.Map Ident Definition
 getShDefs (Context (_, shapedefs, _, _) _) = shapedefs
 
+-- |Returns the active view(s).
 getViews :: Context -> [Ident]
 getViews (Context (_, _, views, _) _) = views
 
+-- |Returns the framerate.
 getFr :: Context -> Integer
 getFr (Context (_, _, _, fr) _) = fr
 
-emptySt :: State
-emptySt = M.empty
-
-emptyEnv :: Integer -> Environment
-emptyEnv n = (M.empty, M.empty, [], n)
-
+-- |Returns a new empty context.
 emptyCon :: Integer -> Context
-emptyCon n = Context (emptyEnv n) emptySt
+emptyCon n = Context emptyEnv emptyState
+  where emptyEnv = (M.empty, M.empty, [], n)
+        emptyState = M.empty
 
+-- |Returns a context with its state changed to the given state.
 updateSt :: Context -> State -> Context
 updateSt con = Context (getEnv con)
 
+-- |Returns a context with its active view(s) changed to the given view(s).
 updateView :: Context -> [Ident] -> Context
 updateView con views = Context (getViDefs con,
                                 getShDefs con,
                                 views, getFr con) (getSt con)
 
+-- |Returns a context with its view/group definitions changed to the given.
 updateViDefs :: Context -> Ident -> Definition -> Context
 updateViDefs con ident def = Context (M.insert ident def (getViDefs con),
                                       getShDefs con,
                                       getViews con,
                                       getFr con) (getSt con)
 
+-- |Returns a context with its circle/rectangle definitions changed to the given.
 updateShDefs :: Context -> Ident -> Definition -> Context
 updateShDefs con ident def = Context (getViDefs con,
                                       M.insert ident def (getShDefs con),
                                       getViews con,
                                       getFr con) (getSt con)
 
+-- |Returns a 'Just definition' if it exists in the given map.
+-- Returns Nothing otherwise.
 lookupDef :: Ident -> M.Map Ident Definition -> Maybe Definition 
 lookupDef = M.lookup
 
+-- |Moves the shapes in the given state to the given position and returns the
+-- updated state.
 move :: State -> [Ident] -> [Ident] -> Pos -> State
 move st [] [] _ = st
 move st [] _ _ = st
@@ -173,6 +147,14 @@ move st (v:vs) ids p = case M.lookup v st of
                                   (Just (x, y), Rel (Const dx) (Const dy)) ->
                                       move' (M.insert i (x + dx, y + dy) view) is
                                   _ -> error "Postion was not constants"
+
+-- |Inserts a shape on the given view(s) and returns the updated state.
+insertShape :: Ident -> Position -> [Ident] -> State -> State
+insertShape _ _ [] st = st
+insertShape ident pos (v:vs) st = case M.lookup v st of
+    Nothing -> error "Active view is missing in the state"
+    Just view -> insertShape ident pos vs (M.insert v (M.insert ident pos view) st)
+
 
 -----------------------------
 -- Functions for SalsaCommand
@@ -258,12 +240,6 @@ insertDef def@(Circle ident (Const x) (Const y) _ _) = Salsa $
             in ((), newCon)
 insertDef _ = error "Def cannot be inserted or elements are not constants"
 
-insertShape :: Ident -> Position -> [Ident] -> State -> State
-insertShape _ _ [] st = st
-insertShape ident pos (v:vs) st = case M.lookup v st of
-    Nothing -> error "Active view is missing in the state"
-    Just view -> insertShape ident pos vs (M.insert v (M.insert ident pos view) st)
-
 liftC :: SalsaCommand a -> Salsa a
 liftC m = Salsa $ \con ->
     let (x, newState) = runSC m con
@@ -294,3 +270,44 @@ definition group@(Group {}) = insertDef group
 defCom :: DefCom -> Salsa ()
 defCom (Def def) = definition def
 defCom (Com com) = liftC $ command com
+
+
+---------------------------------------
+-- Functions for building the animation
+--
+
+buildContexts :: [DefCom] -> Context -> [Context] -> [Context]
+buildContexts [] con cons = con:cons
+buildContexts (def@(Def _):defcoms) con cons =
+    let (_, newCon) = runS (defCom def) con
+    in buildContexts defcoms newCon cons
+buildContexts (com@(Com _):defcoms) con cons =
+    let (_, newCon) = runS (defCom com) con
+    in buildContexts defcoms newCon (con:cons)
+
+buildViews :: Context -> [(ViewName, Integer, Integer)]
+buildViews con = M.elems (M.map (\(Viewdef ident (Const x) (Const y)) ->
+                          (ident, x, y)) (M.filter (\def ->
+                                                    case def of
+                                                        Viewdef {} -> True
+                                                        _ -> False)
+                          (getViDefs con)))
+
+buildFrames :: Integer -> [Context] -> [Frame] -> [Frame]
+buildFrames _ [] frames = frames
+buildFrames _ [_] frames = frames
+buildFrames n (con1:con2:cons) frames = buildFrames n (con2:cons) (frames ++ animate n con1 con2)
+
+
+animate :: Integer -> Context -> Context -> [Frame]
+animate n con1 con2 =
+    let shapes = M.intersectionWith (M.intersectionWith (interpolate n)) (getSt con1) (getSt con2)
+        instrs = M.mapWithKey (\vident view -> M.mapWithKey (\sident plist -> map (\pos -> draw pos (M.lookup sident $ getShDefs con1) vident ) plist ) view) shapes
+        frames = map Li.concat $ Li.transpose $ M.elems $ M.map (Li.transpose . M.elems) instrs
+    in frames
+
+draw :: (Integer, Integer) -> Maybe Definition -> ViewName -> GpxInstr
+draw (x,y) (Just (Rectangle _ _ _ (Const w) (Const h) col)) view = DrawRect x y w h view (show col)
+draw (x,y) (Just (Circle _ _ _ (Const r) col)) view = DrawCirc x y r view (show col)
+draw _ Nothing _ = error "Shape from state was not in environment"
+draw _ (Just _) _ = error "Not a shape or shape was malformed, e.g. with not constant parameters"
