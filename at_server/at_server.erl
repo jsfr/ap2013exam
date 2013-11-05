@@ -110,13 +110,14 @@ server_loop(State, Helpers) ->
                         reply_ok(From, Result),
                         server_loop(State, Helpers);
                     aborted ->
-                        NewHelpers = dict:store(Ref, {aborted, Helper}, Helpers), % Should we erase instead?
+                        NewHelpers = dict:erase(Ref, Helpers),
                         reply_abort(From),
                         server_loop(State, NewHelpers)
                 end;
-            {ok, {aborted, _}} -> % Should we erase here?
+            {ok, {aborted, _}} ->
                 reply_abort(From),
-                server_loop(State, Helpers);
+                NewHelpers = dict:erase(Ref, Helpers),
+                server_loop(State, NewHelpers);
             error ->
                 reply_error(From),
                 server_loop(State, Helpers)
@@ -165,7 +166,7 @@ abort_t({Atom, Pid}) ->
         ok ->
             info(Pid, abort),
             {aborted, Pid};
-        abort ->
+        aborted ->
             {aborted, Pid}
     end.
 

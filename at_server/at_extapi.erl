@@ -7,8 +7,8 @@
 %%% @end
 %%% Created : Oct 2013 by Michael Kirkedal Thomsen <shapper@diku.dk>
 %%%-------------------------------------------------------------------
-%%% Student name:
-%%% Student KU-id:
+%%% Student name: Jens Fredskov
+%%% Student KU-id: chw752
 %%%-------------------------------------------------------------------
 
 -module(at_extapi).
@@ -19,16 +19,77 @@
 %%% Extended API
 %%%-------------------------------------------------------------------
 
-abort(AT, Ref) -> put_your_code.
+abort(AT, Ref) ->
+    at_server:update_t(AT, Ref, fun(_) -> exit(aborted) end),
+    ok.
 
-tryUpdate(AT, Fun) -> put_your_code.
+tryUpdate(AT, Fun) ->
+    {ok, Ref} = at_server:begin_t(AT),
+    case at_server:query_t(AT, Ref, fun(State) -> State end) of
+        {ok, State} ->
+            try Fun(State) of
+                _ ->
+                    at_server:update_t(AT, Ref, Fun),
+                    case at_server:commit_t(AT, Ref) of
+                        ok -> ok;
+                        aborted -> aborted;
+                        error -> aborted
+                    end
+            catch
+                _:_ -> error
+            end;
+        aborted -> aborted;
+        error -> aborted
+    end.
 
-ensureUpdate(AT, Fun) ->put_your_code.
+ensureUpdate(AT, Fun) ->
+    case tryUpdate(AT, Fun) of
+        ok -> ok;
+        aborted -> ensureUpdate(AT, Fun);
+        error -> error
+    end.
 
-choiceUpdate(AT, Fun, Val_list) -> put_your_code.
+choiceUpdate(AT, Fun, Val_list) ->
+    {ok, Ref} = at_server:begin_t(AT),
+    case at_server:query_t(AT, Ref, fun(State) -> State end) of
+        {ok, State} ->
+            Self = self(),
+            Length = length(Val_list),
+            lists:map(fun(E) -> spawn(fun () -> evalFun(Self, Fun, State, Ref, E) end) end, Val_list),
+            receiveUpdate(AT, Ref, Length, 0);
+        aborted -> aborted;
+        error -> error
+    end.
+
+receiveUpdate(AT, Ref, Length, Errors) ->
+    receive
+        {ok, {Ref, Fun, E}} ->
+            at_server:update_t(AT, Ref, fun(State) -> Fun(State, E) end),
+            case at_server:commit_t(AT, Ref) of
+                ok -> {ok, E};
+                aborted -> aborted;
+                error -> error
+            end;
+        {error, Ref} ->
+            NewErrors = Errors + 1,
+            case NewErrors of
+                Length -> error;
+                _ -> receiveUpdate(AT, Ref, Length, NewErrors)
+            end
+    end.
+
+evalFun(From, Fun, State, Ref, E) ->
+    try Fun(State, E) of
+        _ -> info(From, {ok, {Ref, Fun, E}})
+    catch
+        _:_ -> 
+            info(From, {error, Ref})
+    end.
+
 
 %%%-------------------------------------------------------------------
 %%% Communication primitives
 %%%-------------------------------------------------------------------
 
-% Copy what you need from at_server or create you own.
+info(Pid, Msg) ->
+    Pid ! Msg.
