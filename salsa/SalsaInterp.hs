@@ -11,6 +11,7 @@ import Gpx
 import qualified Data.Map as M
 import qualified Data.Maybe as Ma
 import qualified Data.List as Li
+import qualified Control.Arrow as Ar
 
 
 --------------------------------
@@ -39,7 +40,7 @@ instance Monad SalsaCommand where
     return x = SalsaCommand $ \con -> (x, getSt con)
     m >>= f  = SalsaCommand $ \con ->
                    let (x, newState) = runSC m con
-                   in runSC (f x) $ updateSt con newState
+                   in runSC (f x) $ Context (getEnv con) newState
 
 
 ------------------
@@ -70,7 +71,8 @@ runProg :: Integer -> Program -> Animation
 runProg 0 _ = error "Framerate cannot be zero"
 runProg n prog = let contexts = buildContexts prog (emptyCon n) []
                      views = buildViews (head contexts)
-                     start = animate 1 (last contexts) (last contexts)
+                     firstCon = last contexts
+                     start = buildAnimation 1 firstCon firstCon
                      frames = buildFrames n (reverse contexts) []
                  in (views,  start ++ frames)
 
@@ -80,12 +82,12 @@ runProg n prog = let contexts = buildContexts prog (emptyCon n) []
 --
 
 -- |Returns the viewdef and group definitions.
-getViDefs :: Context -> M.Map Ident Definition
-getViDefs (Context (viewdefs, _, _, _) _) = viewdefs
+getVDefs :: Context -> M.Map Ident Definition
+getVDefs (Context (viewdefs, _, _, _) _) = viewdefs
 
 -- |Returns the circle and rectangle definitions.
-getShDefs :: Context -> M.Map Ident Definition
-getShDefs (Context (_, shapedefs, _, _) _) = shapedefs
+getSDefs :: Context -> M.Map Ident Definition
+getSDefs (Context (_, shapedefs, _, _) _) = shapedefs
 
 -- |Returns the active view(s).
 getViews :: Context -> [Ident]
@@ -101,71 +103,28 @@ emptyCon n = Context emptyEnv emptyState
   where emptyEnv = (M.empty, M.empty, [], n)
         emptyState = M.empty
 
--- |Returns a context with its state changed to the given state.
-updateSt :: Context -> State -> Context
-updateSt con = Context (getEnv con)
-
 -- |Returns a context with its active view(s) changed to the given view(s).
 updateView :: Context -> [Ident] -> Context
-updateView con views = Context (getViDefs con,
-                                getShDefs con,
+updateView con views = Context (getVDefs con,
+                                getSDefs con,
                                 views, getFr con) (getSt con)
-
--- |Returns a context with its view/group definitions changed to the given.
-updateViDefs :: Context -> Ident -> Definition -> Context
-updateViDefs con ident def = Context (M.insert ident def (getViDefs con),
-                                      getShDefs con,
-                                      getViews con,
-                                      getFr con) (getSt con)
-
--- |Returns a context with its circle/rectangle definitions changed to the given.
-updateShDefs :: Context -> Ident -> Definition -> Context
-updateShDefs con ident def = Context (getViDefs con,
-                                      M.insert ident def (getShDefs con),
-                                      getViews con,
-                                      getFr con) (getSt con)
-
--- |Returns a 'Just definition' if it exists in the given map.
--- Returns Nothing otherwise.
-lookupDef :: Ident -> M.Map Ident Definition -> Maybe Definition 
-lookupDef = M.lookup
-
--- |Moves the shapes in the given state to the given position and returns the
--- updated state.
-move :: State -> [Ident] -> [Ident] -> Pos -> State
-move st [] [] _ = st
-move st [] _ _ = st
-move st _ [] _ = st
-move st (v:vs) ids p = case M.lookup v st of
-                            Nothing -> move st vs ids p
-                            Just view -> move (M.insert v (move' view ids) st) vs ids p
-    where move' view [] = view
-          move' view (i:is) = case (M.lookup i view, p) of
-                                  (Nothing, _) -> move' view is
-                                  (Just _, Abs (Const x) (Const y)) ->
-                                      move' (M.insert i (x, y) view) is
-                                  (Just (x, y), Rel (Const dx) (Const dy)) ->
-                                      move' (M.insert i (x + dx, y + dy) view) is
-                                  _ -> error "Postion was not constants"
-
--- |Inserts a shape on the given view(s) and returns the updated state.
-insertShape :: Ident -> Position -> [Ident] -> State -> State
-insertShape _ _ [] st = st
-insertShape ident pos (v:vs) st = case M.lookup v st of
-    Nothing -> error "Active view is missing in the state"
-    Just view -> insertShape ident pos vs (M.insert v (M.insert ident pos view) st)
-
 
 -----------------------------
 -- Functions for SalsaCommand
 --
 
-askCon :: SalsaCommand Context
-askCon = SalsaCommand $ \con -> (con, getSt con)
+ask :: SalsaCommand Context
+ask = SalsaCommand $ \con -> (con, getSt con)
 
-askView :: Ident -> SalsaCommand [Ident]
-askView ident = SalsaCommand $ \con ->
-    let idents = case lookupDef ident (getViDefs con) of
+askSt :: SalsaCommand State
+askSt = SalsaCommand $ getSt Ar.&&& getSt
+
+askEnv :: SalsaCommand Environment
+askEnv = SalsaCommand $ getEnv Ar.&&& getSt
+
+askVDef :: Ident -> SalsaCommand [Ident]
+askVDef ident = SalsaCommand $ \con ->
+    let idents = case M.lookup ident (getVDefs con) of
                      Nothing -> error "View not defined"
                      Just (Group _ ids) -> ids
                      Just (Viewdef {}) -> [ident]
@@ -179,6 +138,26 @@ local f m = SalsaCommand $ \con -> let con' = f con
 putState :: State -> SalsaCommand ()
 putState newState = SalsaCommand $ const ((), newState)
 
+move :: [Ident] -> [Ident] -> Pos -> SalsaCommand ()
+move [] [] _ = return ()
+move [] _ _ = return ()
+move _ [] _ = return ()
+move (v:vs) idents p = do st <- askSt
+                          case M.lookup v st of
+                              Nothing -> move vs idents p
+                              Just view -> do let view' = move' view idents
+                                              putState (M.insert v view' st)
+                                              move vs idents p
+    where move' view [] = view
+          move' view (i:is) = case (M.lookup i view, p) of
+                                  (Nothing, _) ->
+                                      move' view is
+                                  (Just _, Abs (Const x) (Const y)) ->
+                                      move' (M.insert i (x, y) view) is
+                                  (Just (x, y), Rel (Const dx) (Const dy)) ->
+                                      move' (M.insert i (x+dx, y+dy) view) is
+                                  (Just _, _) -> error "Position not evaluated first."
+
 expr :: Expr -> SalsaCommand Integer
 expr (Plus e1 e2) = do x <- expr e1
                        y <- expr e2
@@ -187,12 +166,12 @@ expr (Minus e1 e2) = do x <- expr e1
                         y <- expr e2
                         return $ x - y
 expr (Const int) = return int
-expr (Xproj ident) = do con <- askCon
+expr (Xproj ident) = do con <- ask
                         let Just (x,_) = minimum [ e | e <- map (M.lookup ident)
                                                                 (M.elems $ getSt con),
                                                                 Ma.isJust e]
                         return x
-expr (Yproj ident) = do con <- askCon
+expr (Yproj ident) = do con <- ask
                         let Just (_,y) = minimum [ e | e <- map (M.lookup ident)
                                                                 (M.elems $ getSt con),
                                                                 Ma.isJust e]
@@ -201,17 +180,15 @@ expr (Yproj ident) = do con <- askCon
 command :: Command -> SalsaCommand ()
 command (Move idents (Abs e1 e2)) = do x <- expr e1
                                        y <- expr e2
-                                       con <- askCon
-                                       putState (move (getSt con) (getViews con)
-                                                 idents (Abs (Const x) (Const y)))
+                                       con <- ask
+                                       move (getViews con) idents (Abs (Const x) (Const y))
 command (Move idents (Rel e1 e2)) = do dx <- expr e1
                                        dy <- expr e2
-                                       con <- askCon
-                                       putState (move (getSt con) (getViews con)
-                                                 idents (Rel (Const dx) (Const dy)))
+                                       con <- ask
+                                       move (getViews con) idents (Rel (Const dx) (Const dy))
 command (Par c1 c2) = do command c1
                          command c2
-command (At c ident) = do views <- askView ident
+command (At c ident) = do views <- askVDef ident
                           local (`updateView` views) (command c)
 
 
@@ -219,53 +196,66 @@ command (At c ident) = do views <- askView ident
 -- Functions for Salsa
 --
 
-putView :: [Ident] -> Salsa ()
-putView idents = Salsa $ \con -> ((), updateView con idents)
-
-insertDef :: Definition -> Salsa ()
-insertDef def@(Viewdef ident _ _) = Salsa $
-    \con -> let st = M.insert ident M.empty (getSt con)
-                newCon1 = updateViDefs con ident def
-                newCon2 = updateSt newCon1 st
-            in ((), newCon2)
-insertDef def@(Group ident _) = Salsa $
-    \con -> ((), updateViDefs con ident def)
-insertDef def@(Rectangle ident (Const x) (Const y) _ _ _) = Salsa $
-    \con -> let st = insertShape ident (x,y) (getViews con) (getSt con)
-                newCon = updateSt (updateShDefs con ident def) st
-            in ((), newCon)
-insertDef def@(Circle ident (Const x) (Const y) _ _) = Salsa $
-    \con -> let st = insertShape ident (x,y) (getViews con) (getSt con)
-                newCon = updateSt (updateShDefs con ident def) st
-            in ((), newCon)
-insertDef _ = error "Def cannot be inserted or elements are not constants"
-
 liftC :: SalsaCommand a -> Salsa a
 liftC m = Salsa $ \con ->
     let (x, newState) = runSC m con
-    in (x, updateSt con newState)
+    in (x, Context (getEnv con) newState)
+
+putEnv :: Environment -> Salsa ()
+putEnv env = Salsa $ \con -> ((), Context env (getSt con))
+
+putView :: [Ident] -> Salsa ()
+putView idents = Salsa $ \con -> ((), updateView con idents)
+
+putShape :: [Ident] -> Ident -> Position -> Salsa ()
+putShape [] _ _ = return ()
+putShape (v:vs) ident pos =
+    do st <- liftC askSt
+       case M.lookup v st of
+           Nothing -> error "Active view is missing in the state"
+           Just view -> do liftC $ putState (M.insert v (M.insert ident pos view) st)
+                           putShape vs ident pos
+
+putDef :: Definition -> Salsa ()
+putDef def@(Viewdef ident _ _) =
+    do st <- liftC askSt
+       (vdefs, sdefs, views, fr) <- liftC askEnv
+       liftC $ putState (M.insert ident M.empty st)
+       putEnv (M.insert ident def vdefs, sdefs, views, fr)
+putDef def@(Group ident _) =
+    do (vdefs, sdefs, views, fr) <- liftC askEnv
+       putEnv (M.insert ident def vdefs, sdefs, views, fr)
+putDef rect@(Rectangle ident (Const x) (Const y) _ _ _) =
+    do (vdefs, sdefs, views, fr) <- liftC askEnv
+       putShape views ident (x,y)
+       putEnv (vdefs, M.insert ident rect sdefs, views, fr)
+putDef circ@(Circle ident (Const x) (Const y) _ _) =
+    do (vdefs, sdefs, views, fr) <- liftC askEnv
+       putShape views ident (x,y)
+       putEnv (vdefs, M.insert ident circ sdefs, views, fr)
+putDef _ = error "Def has not been evaluated or should not be inserted."
 
 definition :: Definition -> Salsa ()
 definition (Viewdef ident e1 e2) =
     do x <- liftC $ expr e1
        y <- liftC $ expr e2
-       insertDef (Viewdef ident (Const x) (Const y))
+       putDef (Viewdef ident (Const x) (Const y))
        putView [ident]
 definition (Rectangle ident e1 e2 e3 e4 col) =
     do x <- liftC $ expr e1
        y <- liftC $ expr e2
        w <- liftC $ expr e3
        h <- liftC $ expr e4
-       insertDef (Rectangle ident (Const x) (Const y) (Const w) (Const h) col)
+       putDef (Rectangle ident (Const x) (Const y) (Const w) (Const h) col)
 definition (Circle ident e1 e2 e3 col) =
     do x <- liftC $ expr e1
        y <- liftC $ expr e2
        r <- liftC $ expr e3
-       insertDef (Circle ident (Const x) (Const y) (Const r) col)
+       putDef (Circle ident (Const x) (Const y) (Const r) col)
 definition (View ident) =
-    do idents <- liftC $ askView ident
+    do idents <- liftC $ askVDef ident
        putView idents
-definition group@(Group {}) = insertDef group
+definition group@(Group {}) = putDef group
 
 defCom :: DefCom -> Salsa ()
 defCom (Def def) = definition def
@@ -291,20 +281,31 @@ buildViews con = M.elems (M.map (\(Viewdef ident (Const x) (Const y)) ->
                                                     case def of
                                                         Viewdef {} -> True
                                                         _ -> False)
-                          (getViDefs con)))
+                          (getVDefs con)))
 
 buildFrames :: Integer -> [Context] -> [Frame] -> [Frame]
 buildFrames _ [] frames = frames
-buildFrames _ [_] frames = frames
-buildFrames n (con1:con2:cons) frames = buildFrames n (con2:cons) (frames ++ animate n con1 con2)
+buildFrames _ (_:[]) frames = frames
+buildFrames n (con1:con2:cons) frames = buildFrames n (con2:cons) (frames ++ buildAnimation n con1 con2)
 
-
-animate :: Integer -> Context -> Context -> [Frame]
-animate n con1 con2 =
-    let shapes = M.intersectionWith (M.intersectionWith (interpolate n)) (getSt con1) (getSt con2)
-        instrs = M.mapWithKey (\vident view -> M.mapWithKey (\sident plist -> map (\pos -> draw pos (M.lookup sident $ getShDefs con1) vident ) plist ) view) shapes
+buildAnimation :: Integer -> Context -> Context -> [Frame]
+buildAnimation n con1 con2 =
+    let positions = M.intersectionWith (M.intersectionWith (interpolate n)) (getSt con1) (getSt con2)
+        newShapes = M.intersectionWith (flip M.difference) (getSt con1) (getSt con2)
+        instrs = M.mapWithKey (\vident view ->
+                     M.mapWithKey (\sident plist ->
+                         map (\pos ->
+                             draw pos (M.lookup sident $ getSDefs con1) vident )
+                         plist )
+                     view)
+                 positions
         frames = map Li.concat $ Li.transpose $ M.elems $ M.map (Li.transpose . M.elems) instrs
-    in frames
+        lastframe = concatMap M.elems $ M.elems $ M.mapWithKey (\vident view ->
+                        M.mapWithKey (\sident pos ->
+                            draw pos (M.lookup sident $ getSDefs con2) vident )
+                        view)
+                    newShapes
+    in init frames ++ [last frames ++ lastframe]
 
 draw :: (Integer, Integer) -> Maybe Definition -> ViewName -> GpxInstr
 draw (x,y) (Just (Rectangle _ _ _ (Const w) (Const h) col)) view = DrawRect x y w h view (show col)
