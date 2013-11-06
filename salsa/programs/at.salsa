@@ -1,0 +1,9 @@
+viewdef One 500 500
+viewdef Two 400 400
+group Both [One Two]
+view Both
+circle ritchie 10 10 20 red
+circle knuth 100 100 20 green
+
+view One
+ritchie -> +(0, 90) || knuth -> +(0, 0 - 90) @ Two

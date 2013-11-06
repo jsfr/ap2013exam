@@ -21,6 +21,7 @@
 
 abort(AT, Ref) ->
     at_server:update_t(AT, Ref, fun(_) -> exit(aborted) end),
+    timer:sleep(50),
     ok.
 
 tryUpdate(AT, Fun) ->

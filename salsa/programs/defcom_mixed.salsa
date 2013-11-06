@@ -1,0 +1,9 @@
+viewdef Main 200 200
+rectangle a 0 0 10 10 red
+
+a -> (100,100)
+rectangle b 20 20 20 20 blue
+rectangle c 80 80 30 30 plum
+
+b -> (50,50)
+rectangle d 10 20 30 40 green

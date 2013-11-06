@@ -1,8 +1,3 @@
---
--- Skeleton for Salsa parser
--- To be used at the exam for Advanced Programming, B1-2013
---
-
 module SalsaParser(parseString, parseFile, Error) where
 
 import SalsaAst
