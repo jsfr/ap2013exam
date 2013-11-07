@@ -2,6 +2,15 @@ import Test.HUnit
 import SalsaParser
 import SalsaAst
 
+main :: IO Counts
+main = runTestTT $ TestList [
+       TestLabel "Simple definitions" $ TestList [def0, def1, def2, def3, def4],
+       TestLabel "Simple commands" $ TestList [com0, com1, com2, com3, com4],
+       TestLabel "Expressions" $ TestList [expr0, expr1, expr2],
+       TestLabel "Idents" $ TestList [ident0, ident1, ident2, ident3],
+       TestLabel "Whitespace" $ TestList [ws0, ws1, ws2]
+       ]
+
 def0 :: Test
 def0 = TestCase $ assertBool "viewdef" $
         parseString "viewdef Id_0 10 20" ==
@@ -101,12 +110,3 @@ ws2 :: Test
 ws2 = TestCase $ assertBool "symbolic tokens, command" $
         parseString "id0->+(0+ 10, 10)@ Id1" ==
             Right [Com (At (Move ["id0"] (Rel (Plus (Const 0) (Const 10)) (Const 10))) "Id1")]
-
-main :: IO Counts
-main = runTestTT $ TestList [
-       TestLabel "Simple definitions" $ TestList [def0, def1, def2, def3, def4],
-       TestLabel "Simple commands" $ TestList [com0, com1, com2, com3, com4],
-       TestLabel "Expressions" $ TestList [expr0, expr1, expr2],
-       TestLabel "Idents" $ TestList [ident0, ident1, ident2, ident3],
-       TestLabel "Whitespace" $ TestList [ws0, ws1, ws2]
-       ]

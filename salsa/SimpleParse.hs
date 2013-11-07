@@ -8,16 +8,15 @@
 -}
 module SimpleParse where
 
-import Control.Monad(MonadPlus(..),liftM)
+import Control.Monad(MonadPlus(..))
 import Data.Char (isSpace)
 
 newtype Parser a = Parser (String -> [(a, String)])
-
-parse :: Parser t -> String -> [(t, String)]
 parse (Parser p) = p
 
-parse' :: Parser t -> String -> [t]
 parse' p s = [ result | (result,rest) <- parse p s, null rest ]
+
+
 
 item :: Parser Char     -- String -> [(Char,String)]
 item = Parser item'
@@ -25,15 +24,14 @@ item = Parser item'
         item' (x : xs) = [(x,xs)]
 
 reject :: Parser a
-reject = Parser $ const []
+reject = Parser $ \ _ -> []
 
 eof :: Parser ()
 eof = Parser  eof'
   where eof' "" = [((),[])]
         eof' _  = []
 
-parseEof :: Parser t -> String -> [(t, String)]
-parseEof p = parse $ liftM fst (p >>> eof)
+parseEof p = parse $ p >>> eof >>= return . fst
 
 
 (>>>) :: Parser a -> Parser b -> Parser (a,b)
@@ -80,6 +78,7 @@ instance MonadPlus Parser where
   p `mplus` q = p <|> q
   mzero       = reject
 
+
 many :: Parser a -> Parser [a]
 many p = do v <- p
             vs <- many p
@@ -87,9 +86,9 @@ many p = do v <- p
          <|> return []
 
 many1 :: Parser a -> Parser [a]
-many1 p = do val <- p
+many1 p = do v <- p
              vs <- many p
-             return (val:vs)
+             return (v:vs)
 
 sepBy           :: Parser a -> Parser b -> Parser [a]
 p `sepBy` sep    = (p `sepBy1` sep) <|> return []
@@ -129,8 +128,5 @@ spaces           = many space
 token           :: Parser a -> Parser a
 token p          = spaces >> p
 
-symbol :: String -> Parser String
 symbol           = token . string
-
-schar :: Char -> Parser Char
 schar            = token . char

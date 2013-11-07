@@ -62,6 +62,11 @@ choiceUpdate(AT, Fun, Val_list) ->
         error -> error
     end.
 
+
+%%%-------------------------------------------------------------------
+%%% Internal Implementation
+%%%-------------------------------------------------------------------
+
 receiveUpdate(AT, Ref, Length, Errors) ->
     receive
         {ok, {Ref, Fun, E}} ->

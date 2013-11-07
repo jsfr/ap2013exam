@@ -9,9 +9,9 @@ module SalsaInterp(Position, interpolate, runProg) where
 import SalsaAst
 import Gpx
 import qualified Data.Map as M
-import qualified Data.Maybe as Ma
-import qualified Data.List as Li
-import qualified Control.Arrow as Ar
+import Data.Maybe(isJust)
+import Data.List(transpose)
+import Control.Arrow((&&&))
 
 
 --------------------------------
@@ -117,10 +117,10 @@ ask :: SalsaCommand Context
 ask = SalsaCommand $ \con -> (con, getSt con)
 
 askSt :: SalsaCommand State
-askSt = SalsaCommand $ getSt Ar.&&& getSt
+askSt = SalsaCommand $ getSt &&& getSt
 
 askEnv :: SalsaCommand Environment
-askEnv = SalsaCommand $ getEnv Ar.&&& getSt
+askEnv = SalsaCommand $ getEnv &&& getSt
 
 askVDef :: Ident -> SalsaCommand [Ident]
 askVDef ident = SalsaCommand $ \con ->
@@ -169,12 +169,12 @@ expr (Const int) = return int
 expr (Xproj ident) = do con <- ask
                         let Just (x,_) = minimum [ e | e <- map (M.lookup ident)
                                                                 (M.elems $ getSt con),
-                                                                Ma.isJust e]
+                                                                isJust e]
                         return x
 expr (Yproj ident) = do con <- ask
                         let Just (_,y) = minimum [ e | e <- map (M.lookup ident)
                                                                 (M.elems $ getSt con),
-                                                                Ma.isJust e]
+                                                                isJust e]
                         return y
 
 command :: Command -> SalsaCommand ()
@@ -299,7 +299,7 @@ buildAnimation n con1 con2 =
                          plist )
                      view)
                  positions
-        frames = map Li.concat $ Li.transpose $ M.elems $ M.map (Li.transpose . M.elems) instrs
+        frames = map concat $ transpose $ M.elems $ M.map (transpose . M.elems) instrs
         lastframe = concatMap M.elems $ M.elems $ M.mapWithKey (\vident view ->
                         M.mapWithKey (\sident pos ->
                             draw pos (M.lookup sident $ getSDefs con2) vident )
