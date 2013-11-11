@@ -136,10 +136,9 @@ program = spaces >> defcom `sepBy1` spaces1
 
 parseString :: String -> Either Error Program
 parseString s =
-  case parse (do {e <- program; token eof; return e}) s of
-      [(e, [])] -> Right e
-      (_, _):_ -> Left "Parser Error: Ambigious grammar"
-      []        -> Left "Parser Error: Couldn't parse"
+  case parse' (do {e <- program; token eof; return e}) s of
+      (e:_) -> Right e
+      []    -> Left "Parser Error: Couldn't parse"
 
 parseFile :: FilePath -> IO (Either Error Program)
 parseFile filename = fmap parseString $ readFile filename
